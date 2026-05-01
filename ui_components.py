@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+import re
 from analysis import (
     analyze_original_by_tool, 
     extract_tag_level_stats,
@@ -44,7 +45,176 @@ from visualization import (
 # ============================================================================
 # STUDY METRICS DISPLAY FUNCTIONS
 # ============================================================================
-
+def display_unmatched_events_table(result_df, original_df, condition, model):
+    """Display ONLY unmatched events by filtering out matched event IDs per tag."""
+    import re
+    from analysis import extract_tag_level_stats
+    
+    st.markdown("---")
+    st.subheader("❌ Unmatched Events Analysis")
+    st.markdown("*Original events that were NOT matched (filtered by event ID)*")
+    
+    if result_df is None or len(result_df) == 0:
+        st.warning("No result data available.")
+        return
+    
+    if original_df is None or len(original_df) == 0:
+        st.warning("No original dataset available.")
+        return
+    
+    # ===== STEP 1: EXTRACT TAG NUMBERS =====
+    tag_col_orig = original_df.columns[0]
+    
+    def extract_tag_number(value):
+        if pd.isna(value):
+            return None
+        val_str = str(value)
+        match = re.match(r'^(\d+)_', val_str)
+        if match:
+            return int(match.group(1))
+        numbers = re.findall(r'\d+', val_str)
+        if numbers:
+            return int(numbers[0])
+        return None
+    
+    orig = original_df.copy()
+    orig['tag_number'] = orig[tag_col_orig].apply(extract_tag_number)
+    
+    # Find tool column
+    tool_col = None
+    for col in orig.columns:
+        if col.lower() == 'tool':
+            tool_col = col
+            break
+    
+    all_tags = sorted(orig['tag_number'].dropna().unique().astype(int))
+    
+    # ===== STEP 2: HELPER TO SAFELY CONVERT EVENT ID TO STRING =====
+    def safe_event_id(value):
+        """Safely convert any event ID value to string."""
+        if pd.isna(value):
+            return None
+        if isinstance(value, (int, float)):
+            return str(int(value))
+        return str(value).strip()
+    
+    # ===== STEP 3: COLLECT MATCHED IDs FROM RESULT PER TAG =====
+    matched_per_tag = {tag: {'rdp': set(), 'santa': set()} for tag in all_tags}
+    
+    def get_tag_from_row(row):
+        for col in ['Tag', 'tag', 'Santa_Tag']:
+            if col in row.index and not pd.isna(row[col]):
+                numbers = re.findall(r'\d+', str(row[col]))
+                if numbers:
+                    return int(numbers[0])
+        if 'SantaID' in row.index and not pd.isna(row['SantaID']):
+            parts = str(row['SantaID']).split('|')
+            numbers = re.findall(r'\d+', parts[0])
+            if numbers:
+                return int(numbers[0])
+        return None
+    
+    # Collect matched RDP event IDs (split chains like "6, 8")
+    if 'RDP_Event_ID' in result_df.columns:
+        for _, row in result_df.iterrows():
+            tag = get_tag_from_row(row)
+            if tag and tag in matched_per_tag:
+                val = row['RDP_Event_ID']
+                if not pd.isna(val):
+                    for eid in str(val).split(','):
+                        eid = eid.strip()
+                        if eid:
+                            matched_per_tag[tag]['rdp'].add(eid)
+    
+    # Collect matched Santa event IDs (handle non-numeric like '9039 & 6411')
+    santa_id_col = None
+    for col in ['Santa_Event', 'Santa_ID', 'santa_event']:
+        if col in result_df.columns:
+            santa_id_col = col
+            break
+    
+    if santa_id_col:
+        for _, row in result_df.iterrows():
+            tag = get_tag_from_row(row)
+            if tag and tag in matched_per_tag:
+                val = row[santa_id_col]
+                eid = safe_event_id(val)
+                if eid:
+                    # Split by & or comma for chains
+                    for part in re.split(r'[&,]', eid):
+                        part = part.strip()
+                        if part:
+                            matched_per_tag[tag]['santa'].add(part)
+    
+    # ===== STEP 4: FILTER ORIGINAL - KEEP ONLY UNMATCHED =====
+    unmatched_rows = []
+    
+    for _, row in orig.iterrows():
+        tag = row['tag_number']
+        if pd.isna(tag) or int(tag) not in matched_per_tag:
+            continue
+        tag = int(tag)
+        
+        if tool_col and not pd.isna(row.get('event_id')):
+            event_id = safe_event_id(row['event_id'])
+            tool = str(row[tool_col]).upper()
+            
+            if tool == 'RDP':
+                if event_id in matched_per_tag[tag]['rdp']:
+                    continue  # MATCHED
+                unmatched_rows.append(row)
+            elif tool == 'SANTA':
+                if event_id in matched_per_tag[tag]['santa']:
+                    continue  # MATCHED
+                unmatched_rows.append(row)
+    
+    if not unmatched_rows:
+        st.success("✅ All original events were matched!")
+        return
+    
+    unmatched_df = pd.DataFrame(unmatched_rows)
+    
+    # Count
+    rdp_count = len(unmatched_df[unmatched_df[tool_col].astype(str).str.upper() == 'RDP']) if tool_col else 0
+    santa_count = len(unmatched_df[unmatched_df[tool_col].astype(str).str.upper() == 'SANTA']) if tool_col else 0
+    
+    # Tag stats for verification
+    tag_stats = extract_tag_level_stats(result_df)
+    tag_remaining_rdp = int(tag_stats['Remaining_RDP'].sum()) if not tag_stats.empty and 'Remaining_RDP' in tag_stats.columns else 0
+    tag_remaining_santa = int(tag_stats['Remaining_Santa'].sum()) if not tag_stats.empty and 'Remaining_Santa' in tag_stats.columns else 0
+    
+    # Summary
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Unmatched RDP", f"{rdp_count:,}")
+        if rdp_count == tag_remaining_rdp:
+            st.caption(f"✅ Matches tag stats ({tag_remaining_rdp})")
+        else:
+            st.caption(f"⚠️ Tag stats: {tag_remaining_rdp}")
+    with col2:
+        st.metric("Unmatched Santa", f"{santa_count:,}")
+        if santa_count == tag_remaining_santa:
+            st.caption(f"✅ Matches tag stats ({tag_remaining_santa})")
+        else:
+            st.caption(f"⚠️ Tag stats: {tag_remaining_santa}")
+    with col3:
+        st.metric("Total Unmatched", f"{len(unmatched_df):,}")
+    with col4:
+        st.metric("Tags with Unmatched", len(unmatched_df['tag_number'].unique()))
+    
+    # Display table
+    st.markdown(f"#### 📋 Unmatched Events ({rdp_count} RDP + {santa_count} Santa = {len(unmatched_df)} total)")
+    st.dataframe(unmatched_df, use_container_width=True, height=500)
+    
+    # Download
+    csv = unmatched_df.to_csv(index=False)
+    st.download_button(
+        label="📥 Download Unmatched Events",
+        data=csv,
+        file_name=f"{condition}_{model}_unmatched.csv",
+        mime="text/csv",
+        key=f"download_unmatched_{condition}_{model}"
+    )
 def display_study_metrics_section(result_df: pd.DataFrame, original_df: pd.DataFrame,
                                    condition: str, model: str):
     """
