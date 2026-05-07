@@ -15,7 +15,7 @@ from ui_components import (
     display_merged_analysis,
     display_research_comparison,
     display_research_report,
-    display_model_agreement_analysis
+    display_model_agreement_analysis,
 )
 
 
