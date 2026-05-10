@@ -7,33 +7,54 @@ import matplotlib.pyplot as plt
 from matplotlib_venn import venn3
 from config import CONDITIONS_MAP, MODELS, RESULTS_DIR, ORIGINAL_DIR
 from data_loader import load_both_files, get_available_files_summary
-from ui_components import (
-    display_css,
-    display_study_summary_all_conditions,
-    display_unmatched_events_table,
-    display_study_metrics_section,
-    display_merged_analysis,
-    display_research_comparison,
-    display_research_report,
-    display_model_agreement_analysis,
+
+# Import tab renderers
+from tabs import (
+    tab1_per_condition,
+    tab2_performance_metrics,
+    tab3_cross_condition,
+    tab4_specific_analysis,
+    tab5_model_chain_comparison
 )
 
-
+# Import shared CSS
+from ui_components import display_css
 
 def load_all_data():
-    """Load all files once and cache them."""
+    """Load all files once and cache them with progress indicator."""
+    if 'all_data' in st.session_state:
+        return st.session_state.all_data
+    
     all_data = {}
+    total = len(CONDITIONS_MAP) * len(MODELS)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    idx = 0
     for condition in CONDITIONS_MAP.keys():
         all_data[condition] = {}
         for model in MODELS:
+            idx += 1
+            status_text.text(f"Loading {condition}_{model}... ({idx}/{total})")
             all_data[condition][model] = load_both_files(condition, model)
+            progress_bar.progress(idx / total)
+    
+    status_text.text("✅ All data loaded!")
+    progress_bar.empty()
+    status_text.empty()
+    
+    st.session_state.all_data = all_data
     return all_data
-
 
 
 def get_cached_summary():
     """Cache file availability summary."""
-    return get_available_files_summary()
+    if 'summary' in st.session_state:
+        return st.session_state.summary
+    
+    summary = get_available_files_summary()
+    st.session_state.summary = summary
+    return summary
 
 
 def main():
@@ -45,7 +66,7 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
+
     # ===== PROFESSIONAL BIOINFORMATICS CSS =====
     st.markdown("""
     <style>
@@ -346,120 +367,26 @@ def main():
         "◈ Per-Condition Analysis",
         "◈ Performance Metrics",
         "◈ Cross-Condition Summary",
-        "◈ Unmatched Events",
-        "◈ Report",
+        "◈ Specific Analysis", 
+        "◈ Chain Comparison",
     ])
     
 
     with tab1:
-        st.markdown("### Per-Condition Analysis")
-        st.caption("Detailed per-condition, per-model evaluation")
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        
-        condition_tabs = st.tabs(list(CONDITIONS_MAP.keys()))
-        
-        for i, (condition, params) in enumerate(CONDITIONS_MAP.items()):
-            with condition_tabs[i]:
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Mutation Rate (μ)", f"{params['mutation_rate']:.2e}")
-                with col2:
-                    st.metric("Recombination Rate (r)", f"{params['recomb_rate']:.3f}")
-                with col3:
-                    available = summary['by_condition'].get(condition, {}).get('csv', 0)
-                    st.metric("Models Available", f"{available}/3")
-                
-                st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-                
-                model_tabs = st.tabs([f"{model}" for model in MODELS])
-                
-                for j, model in enumerate(MODELS):
-                    with model_tabs[j]:
-                        original_df, result_df = all_data[condition][model]
-                        
-                        if result_df is not None:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.caption(f"Original: {'loaded' if original_df is not None else 'not found'} · {len(original_df) if original_df is not None else 0} rows")
-                            with col2:
-                                st.caption(f"Result: loaded · {len(result_df):,} rows")
-                            
-                            # SINGLE MERGED FUNCTION CALL
-                            display_merged_analysis(original_df, result_df, condition, model)
-                            
-                            if show_raw:
-                                with st.expander("Raw Result Data"):
-                                    st.dataframe(result_df, use_container_width=True, height=400)
-                        else:
-                            st.warning(f"No result data for {condition}_{model}.csv")
+        tab1_per_condition.render(all_data, summary, show_raw)
     
     with tab2:
-        st.markdown("## 🔬 Study Metrics — Individual & Comparative Analysis")
-        st.caption("False Positive Rate · Recombinant Accuracy · Breakpoint Distance · Model Agreement")
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        
-        condition_tabs = st.tabs(list(CONDITIONS_MAP.keys()))
-        
-        for i, (condition, params) in enumerate(CONDITIONS_MAP.items()):
-            with condition_tabs[i]:
-                st.markdown(f"### Condition {condition}")
-                st.caption(f"μ = {params['mutation_rate']:.2e} | r = {params['recomb_rate']:.3f}")
-                
-                # Now 4 tabs: 3 individual models + 1 comparison
-                model_tabs = st.tabs(
-                    [f"🤖 {model}" for model in MODELS] + ["🔍 Model Agreement"]
-                )
-                
-                # --- Individual Model Tabs (existing code) ---
-                for j, model in enumerate(MODELS):
-                    with model_tabs[j]:
-                        original_df, result_df = all_data[condition][model]
-                        
-                        if result_df is not None:
-                            display_study_metrics_section(result_df, original_df, condition, model)
-                        else:
-                            st.warning(f"No data for {condition}_{model}")
-                
-                # --- NEW: Model Agreement Tab ---
-                with model_tabs[3]:
-                    st.markdown("### 🔍 Model Agreement & Uniqueness Analysis")
-                    st.caption("Comparing matched events across DT, LR, and NN")
-                    
-                    display_model_agreement_analysis(all_data, condition,MODELS)
-    with tab3:
-        st.markdown("## 📈 All Conditions — Summary Comparison")
-        st.caption("Cross-condition performance overview")
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        display_study_summary_all_conditions()
-        st.markdown("## Cross-Condition Research Analysis")
-        st.caption("Model comparison · Rankings · Performance trade-offs")
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        display_research_comparison()
+        tab2_performance_metrics.render(all_data)
     
+    with tab3:
+        tab3_cross_condition.render()
+
     with tab4:
-        st.markdown("## ❌ Unmatched Events Analysis")
-        st.caption("Original events that could not be matched — filtered by event ID per tag")
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        
-        condition_tabs = st.tabs(list(CONDITIONS_MAP.keys()))
-        
-        for i, (condition, params) in enumerate(CONDITIONS_MAP.items()):
-            with condition_tabs[i]:
-                st.markdown(f"### Condition {condition}")
-                
-                model_tabs = st.tabs([f"🤖 {model}" for model in MODELS])
-                
-                for j, model in enumerate(MODELS):
-                    with model_tabs[j]:
-                        original_df, result_df = all_data[condition][model]
-                        
-                        if result_df is not None:
-                            display_unmatched_events_table(result_df, original_df, condition, model)
-                        else:
-                            st.warning(f"No data for {condition}_{model}")
+        tab4_specific_analysis.render(all_data, summary)    
 
     with tab5:
-        display_research_report()
+        tab5_model_chain_comparison.render(all_data, summary)
+    
 
 if __name__ == "__main__":
     Path(RESULTS_DIR).mkdir(exist_ok=True)

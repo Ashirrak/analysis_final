@@ -5,7 +5,7 @@ import numpy as np
 import re
 from typing import Dict, List, Optional, Set
 
-
+@st.cache_data(ttl=3600) 
 def analyze_original_by_tool(original_df: pd.DataFrame, expected_tag_count: int = 100) -> Dict:
     """
     Analyze original dataset by splitting according to 'tool' column (RDP vs Santa).
@@ -184,7 +184,7 @@ def get_all_tags_from_result(result_df: pd.DataFrame) -> List[int]:
             tags.add(tag_num)
     return sorted(list(tags))
 
-
+@st.cache_data(ttl=3600) 
 def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
     """
     Extract per-tag statistics from result dataset.
@@ -300,7 +300,7 @@ def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
     
     return pd.DataFrame(per_tag_data)
 
-
+@st.cache_data(ttl=3600) 
 def compute_comparison_stats(original_stats: Dict, result_tag_df: pd.DataFrame, 
                              expected_tag_count: int = 100) -> pd.DataFrame:
     """
@@ -574,7 +574,7 @@ def calculate_breakpoint_distance_min(santa_ini: float, santa_end: float,
         'is_reversed': is_reversed
     }
 
-
+@st.cache_data(ttl=3600) 
 def analyze_breakpoint_distances(result_df: pd.DataFrame, genome_length: float = 10000.0) -> Dict:
     """
     Analyze breakpoint distances between Santa and RDP.
@@ -645,77 +645,7 @@ def analyze_breakpoint_distances(result_df: pd.DataFrame, genome_length: float =
         distances['median_total_distance'] = np.median(distances['total_distances'])
     
     return distances
-
-def analyze_breakpoint_distances(result_df: pd.DataFrame, genome_length: float = 10000.0) -> Dict:
-    """
-    Analyze breakpoint distances between Santa and RDP.
-    
-    For each matched event:
-    - Start distance = min(circular_dist(RDP_ini, Santa_INI), circular_dist(RDP_ini, Santa_END))
-    - End distance = min(circular_dist(RDP_end, Santa_INI), circular_dist(RDP_end, Santa_END))
-    - Total distance = (start_distance + end_distance) / 2
-    
-    This correctly handles reversed breakpoints as required.
-    """
-    distances = {
-        'start_distances': [],
-        'end_distances': [],
-        'total_distances': [],
-        'mean_start_distance': 0.0,
-        'mean_end_distance': 0.0,
-        'mean_total_distance': 0.0,
-        'median_start_distance': 0.0,
-        'median_end_distance': 0.0,
-        'median_total_distance': 0.0,
-        'reversed_cases': 0,
-        'total_cases': 0,
-    }
-    
-    if result_df is None or len(result_df) == 0:
-        return distances
-    
-    required_cols = ['Santa_INI', 'Santa_END', 'RDP_INI', 'RDP_END']
-    if not all(col in result_df.columns for col in required_cols):
-        return distances
-    
-    for _, row in result_df.iterrows():
-        try:
-            santa_ini = float(row['Santa_INI']) if not pd.isna(row['Santa_INI']) else np.nan
-            santa_end = float(row['Santa_END']) if not pd.isna(row['Santa_END']) else np.nan
-            rdp_ini = float(row['RDP_INI']) if not pd.isna(row['RDP_INI']) else np.nan
-            rdp_end = float(row['RDP_END']) if not pd.isna(row['RDP_END']) else np.nan
-            
-            if pd.isna(santa_ini) or pd.isna(santa_end) or pd.isna(rdp_ini) or pd.isna(rdp_end):
-                continue
-            
-            distances['total_cases'] += 1
-            
-            # Calculate distances using minimum to either breakpoint
-            dist = calculate_breakpoint_distance_min(santa_ini, santa_end, rdp_ini, rdp_end, genome_length)
-            
-            distances['start_distances'].append(dist['start_distance'])
-            distances['end_distances'].append(dist['end_distance'])
-            distances['total_distances'].append(dist['total_distance'])
-            
-            if dist['is_reversed']:
-                distances['reversed_cases'] += 1
-                
-        except (ValueError, TypeError):
-            continue
-    
-    if distances['start_distances']:
-        distances['mean_start_distance'] = np.mean(distances['start_distances'])
-        distances['median_start_distance'] = np.median(distances['start_distances'])
-    
-    if distances['end_distances']:
-        distances['mean_end_distance'] = np.mean(distances['end_distances'])
-        distances['median_end_distance'] = np.median(distances['end_distances'])
-    
-    if distances['total_distances']:
-        distances['mean_total_distance'] = np.mean(distances['total_distances'])
-        distances['median_total_distance'] = np.median(distances['total_distances'])
-    
-    return distances
+@st.cache_data(ttl=3600) 
 def analyze_recombinant_accuracy(result_df: pd.DataFrame) -> Dict:
     """
     Analyze recombinant identification accuracy.
@@ -769,7 +699,7 @@ def analyze_recombinant_accuracy(result_df: pd.DataFrame) -> Dict:
     
     return accuracy
 
-
+@st.cache_data(ttl=3600) 
 def compute_study_metrics(result_df: pd.DataFrame, original_stats: Dict) -> Dict:
     """
     Compute the three key metrics for the study:
@@ -846,7 +776,7 @@ def compute_study_metrics(result_df: pd.DataFrame, original_stats: Dict) -> Dict
     
     return metrics
 
-
+@st.cache_data(ttl=3600)
 def compute_study_summary_all_conditions() -> pd.DataFrame:
     """
     Compute study metrics for all 9 conditions and 3 models.
