@@ -5,7 +5,7 @@ import numpy as np
 import re
 from typing import Dict, List, Optional, Set
 
-@st.cache_data(ttl=3600) 
+
 def analyze_original_by_tool(original_df: pd.DataFrame, expected_tag_count: int = 100) -> Dict:
     """
     Analyze original dataset by splitting according to 'tool' column (RDP vs Santa).
@@ -184,7 +184,7 @@ def get_all_tags_from_result(result_df: pd.DataFrame) -> List[int]:
             tags.add(tag_num)
     return sorted(list(tags))
 
-@st.cache_data(ttl=3600) 
+ 
 def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
     """
     Extract per-tag statistics from result dataset.
@@ -300,7 +300,7 @@ def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
     
     return pd.DataFrame(per_tag_data)
 
-@st.cache_data(ttl=3600) 
+
 def compute_comparison_stats(original_stats: Dict, result_tag_df: pd.DataFrame, 
                              expected_tag_count: int = 100) -> pd.DataFrame:
     """
@@ -574,7 +574,7 @@ def calculate_breakpoint_distance_min(santa_ini: float, santa_end: float,
         'is_reversed': is_reversed
     }
 
-@st.cache_data(ttl=3600) 
+
 def analyze_breakpoint_distances(result_df: pd.DataFrame, genome_length: float = 10000.0) -> Dict:
     """
     Analyze breakpoint distances between Santa and RDP.
@@ -645,7 +645,7 @@ def analyze_breakpoint_distances(result_df: pd.DataFrame, genome_length: float =
         distances['median_total_distance'] = np.median(distances['total_distances'])
     
     return distances
-@st.cache_data(ttl=3600) 
+
 def analyze_recombinant_accuracy(result_df: pd.DataFrame) -> Dict:
     """
     Analyze recombinant identification accuracy.
@@ -699,7 +699,7 @@ def analyze_recombinant_accuracy(result_df: pd.DataFrame) -> Dict:
     
     return accuracy
 
-@st.cache_data(ttl=3600) 
+
 def compute_study_metrics(result_df: pd.DataFrame, original_stats: Dict) -> Dict:
     """
     Compute the three key metrics for the study:
@@ -776,7 +776,7 @@ def compute_study_metrics(result_df: pd.DataFrame, original_stats: Dict) -> Dict
     
     return metrics
 
-@st.cache_data(ttl=3600)
+
 def compute_study_summary_all_conditions() -> pd.DataFrame:
     """
     Compute study metrics for all 9 conditions and 3 models.

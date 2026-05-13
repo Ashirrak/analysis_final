@@ -104,14 +104,14 @@ def load_result_csv(condition: str, model: str) -> Optional[pd.DataFrame]:
     
     return None
 
-@st.cache_data
+
 def load_both_files(condition: str, model: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """Load both original and result files."""
     original_df = load_original_file(condition, model)
     result_df = load_result_csv(condition, model)
     return original_df, result_df
 
-@st.cache_data(ttl=3600)
+
 def scan_available_files() -> dict:
     """
     Scan directories and return all available files.
@@ -135,7 +135,7 @@ def scan_available_files() -> dict:
     
     return available
 
-@st.cache_data(ttl=3600)
+
 def get_available_files_summary() -> dict:
     """Get summary of available files across all conditions and models."""
     from config import CONDITIONS_MAP, MODELS
