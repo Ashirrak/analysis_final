@@ -6,6 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 import re
+from typing import Dict, List, Optional, Tuple
 from analysis import (
     analyze_original_by_tool, 
     extract_tag_level_stats,
@@ -974,6 +975,7 @@ def display_merged_analysis(_original_df: pd.DataFrame, _result_df: pd.DataFrame
         st.metric("RDP− SANTA−", len(orig_stats['tags_with_neither']))
     
     # ===== ROW 2: MATCHING RESULTS =====
+    # ===== ROW 2: MATCHING RESULTS =====
     st.markdown("---")
     st.markdown("### Matching Results")
     
@@ -984,6 +986,11 @@ def display_merged_analysis(_original_df: pd.DataFrame, _result_df: pd.DataFrame
     total_remaining_rdp = totals.get('total_unmatched_rdp', 0)
     total_remaining_santa = totals.get('total_unmatched_santa', 0)
     
+    # ===== NEW: RDP match rate for RDP+ SANTA+ tags only =====
+    rdp_match_pct = totals.get('rdp_match_rate_eligible', 0)
+    total_eligible_rdp = totals.get('total_rdp_in_eligible_tags', total_orig_rdp)
+    matched_eligible_rdp = totals.get('total_matched_rdp_in_eligible_tags', total_matched_rdp)
+    
     # Main matching metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -993,9 +1000,9 @@ def display_merged_analysis(_original_df: pd.DataFrame, _result_df: pd.DataFrame
         st.metric("Overall Match Rate", f"{match_rate:.1f}%",
                  f"{matched_total:,} / {orig_total:,}")
     with col2:
-        rdp_match_rate = (total_matched_rdp / total_orig_rdp * 100) if total_orig_rdp > 0 else 0
-        st.metric("RDP Match Rate", f"{rdp_match_rate:.1f}%",
-                 f"{total_matched_rdp:,} / {total_orig_rdp:,}")
+        # FIXED: Use RDP+ SANTA+ eligible rate
+        st.metric("RDP Match Rate", f"{rdp_match_pct:.1f}%",
+                 f"{matched_eligible_rdp:,} / {total_eligible_rdp:,}")
     with col3:
         santa_match_rate = (total_matched_santa / total_orig_santa * 100) if total_orig_santa > 0 else 0
         st.metric("SANTA Match Rate", f"{santa_match_rate:.1f}%",
@@ -1004,7 +1011,6 @@ def display_merged_analysis(_original_df: pd.DataFrame, _result_df: pd.DataFrame
         fpr = (total_remaining_rdp / total_matched_rdp * 100) if total_matched_rdp > 0 else 0
         st.metric("False Positive Rate", f"{fpr:.1f}%",
                  f"{total_remaining_rdp:,} unmatched RDP")
-    
     # ===== ROW 3: EVENT FLOW VISUALIZATION =====
     st.markdown("---")
     st.markdown("### Event Flow: Original → Matched → Remaining")
@@ -1098,13 +1104,16 @@ def display_merged_analysis(_original_df: pd.DataFrame, _result_df: pd.DataFrame
     with col3:
         summary = pd.DataFrame({
             'Metric': ['Original RDP', 'Original SANTA', 'Matched RDP', 'Matched SANTA',
-                      'Remaining RDP', 'Remaining SANTA', 'Match Rate', 'FPR'],
+                      'Remaining RDP', 'Remaining SANTA', 'Overall Match Rate', 
+                      'RDP Match Rate (RDP+ SANTA+)', 'SANTA Match Rate', 'FPR',
+                      'Eligible RDP (RDP+ SANTA+ tags)', 'Matched RDP in Eligible Tags'],
             'Value': [total_orig_rdp, total_orig_santa, total_matched_rdp, total_matched_santa,
-                     total_remaining_rdp, total_remaining_santa, f"{match_rate:.1f}%", f"{fpr:.1f}%"]
+                     total_remaining_rdp, total_remaining_santa, f"{match_rate:.1f}%", 
+                     f"{rdp_match_pct:.1f}%", f"{santa_match_rate:.1f}%", f"{fpr:.1f}%",
+                     total_eligible_rdp, matched_eligible_rdp]
         })
         st.download_button("Download Summary", summary.to_csv(index=False),
                           f"{condition}_{model}_summary.csv", key=f"dl_sum_{condition}_{model}")
-
 
 def display_css():
     """Display custom CSS for the app."""
@@ -1172,3 +1181,502 @@ def display_css():
         }
     </style>
     """, unsafe_allow_html=True)
+
+
+
+
+
+
+"""
+Statistical Display Components for Streamlit
+=============================================
+Displays hypothesis tests, confidence intervals, and effect sizes.
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy import stats
+
+
+def display_statistical_analysis_section(
+    all_per_replicate_data: Dict,
+    condition: str,
+    models: List[str]
+    ):
+    """
+    Main statistical analysis display section.
+    
+    Args:
+        all_per_replicate_data: Dict[condition][model] = per_replicate DataFrame
+        condition: Current condition
+        models: List of model names
+    """
+    from analysis import (
+        compute_all_statistics,
+        compute_all_pairwise_tests,
+        compute_summary_with_ci,
+        format_p_value,
+    )
+    
+    st.markdown("---")
+    st.markdown("## 📊 Statistical Analysis")
+    st.caption("Paired hypothesis tests · 95% Confidence Intervals · Effect Sizes")
+    
+    # Get data for this condition
+    cond_data = all_per_replicate_data.get(condition, {})
+    
+    if not cond_data:
+        st.warning("No per-replicate data available for statistical analysis.")
+        st.info("Statistical tests require per-replicate data (not aggregated). " +
+                "Please ensure per-replicate metrics are computed.")
+        return
+    
+    # Combine data
+    combined_list = []
+    for model in models:
+        df = cond_data.get(model)
+        if df is not None and not df.empty:
+            df_copy = df.copy()
+            df_copy['Model'] = model
+            combined_list.append(df_copy)
+    
+    if len(combined_list) < 2:
+        st.warning("Need at least 2 models for comparison.")
+        return
+    
+    combined_df = pd.concat(combined_list, ignore_index=True)
+    
+    # ===== TAB 1: SUMMARY STATISTICS =====
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Summary Stats", "🔄 Pairwise Tests", "📈 Visualization", "📝 Report"
+    ])
+    
+    with tab1:
+        _display_summary_statistics(combined_df, models)
+    
+    with tab2:
+        _display_pairwise_tests(combined_df, models)
+    
+    with tab3:
+        _display_statistical_visualizations(combined_df, models)
+    
+    with tab4:
+        _display_statistical_report(combined_df, models, condition)
+
+
+def _display_summary_statistics(combined_df: pd.DataFrame, models: List[str]):
+    """Display summary statistics table."""
+    from analysis import compute_summary_with_ci
+    
+    st.markdown("### Descriptive Statistics by Model")
+    st.caption("Mean ± SD with 95% Confidence Intervals")
+    
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    available_metrics = [m for m in metrics if m in combined_df.columns]
+    
+    for metric in available_metrics:
+        st.markdown(f"**{metric.replace('_', ' ')}**")
+        
+        rows = []
+        for model in models:
+            model_data = combined_df[combined_df['Model'] == model][metric].dropna()
+            
+            if len(model_data) < 3:
+                continue
+            
+            summary = compute_summary_with_ci(
+                pd.DataFrame({metric: model_data}), metric
+            )
+            
+            rows.append({
+                'Model': model,
+                'N': summary['n'],
+                'Mean': f"{summary['mean']:.4f}",
+                'SD': f"{summary['std']:.4f}",
+                '95% CI': f"[{summary['ci_95_lower']:.4f}, {summary['ci_95_upper']:.4f}]",
+                'Median': f"{summary['median']:.4f}",
+                'IQR': f"{summary['iqr']:.4f}",
+            })
+        
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        st.markdown("")
+    
+    # Download button
+    summary_csv = combined_df.groupby('Model').agg(['mean', 'std', 'count']).to_csv()
+    st.download_button(
+        "📥 Download Summary Statistics",
+        summary_csv,
+        "summary_statistics.csv",
+        key="dl_summary_stats"
+    )
+
+
+def _display_pairwise_tests(combined_df: pd.DataFrame, models: List[str]):
+    """Display pairwise comparison tests."""
+    from analysis import compute_all_pairwise_tests, format_p_value
+    
+    st.markdown("### Pairwise Model Comparisons")
+    st.caption("Paired tests with Bonferroni correction for multiple comparisons")
+    
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    available_metrics = [m for m in metrics if m in combined_df.columns]
+    
+    # Test selection
+    test_type = st.radio(
+        "Test type:",
+        ['auto (Shapiro-Wilk normality check)', 'paired t-test', 'Wilcoxon signed-rank'],
+        horizontal=True,
+        key="test_type_radio"
+    )
+    
+    if 'auto' in test_type:
+        test_method = 'auto'
+    elif 't-test' in test_type:
+        test_method = 'ttest'
+    else:
+        test_method = 'wilcoxon'
+    
+    for metric in available_metrics:
+        st.markdown(f"**{metric.replace('_', ' ')}**")
+        
+        tests_df = compute_all_pairwise_tests(combined_df, metric)
+        
+        if not tests_df.empty:
+            # Format for display
+            display_df = tests_df.copy()
+            display_df['P_Value'] = display_df['P_Value'].apply(format_p_value)
+            display_df['Mean_Diff'] = display_df['Mean_Diff'].round(4)
+            display_df["Cohen's d"] = display_df["Cohen's d"].round(3)
+            display_df['CI_95'] = display_df.apply(
+                lambda r: f"[{r['CI_95_Lower']:.4f}, {r['CI_95_Upper']:.4f}]", axis=1
+            )
+            
+            display_cols = [
+                'Comparison', 'N_Pairs', 'Mean_Diff', 'CI_95',
+                'Test', 'P_Value', "Cohen's d", 'Significant (Bonferroni)'
+            ]
+            
+            st.dataframe(
+                display_df[display_cols],
+                use_container_width=True,
+                hide_index=True,
+            )
+            
+            # Effect size interpretation
+            st.caption(
+                "Cohen's d: small = 0.2, medium = 0.5, large = 0.8 | "
+                "Significance: * p<.05, ** p<.01, *** p<.001 (Bonferroni corrected)"
+            )
+        else:
+            st.info(f"Insufficient data for {metric} pairwise comparisons.")
+        
+        st.markdown("")
+    
+    # Download
+    all_tests = []
+    for metric in available_metrics:
+        tests = compute_all_pairwise_tests(combined_df, metric)
+        if not tests.empty:
+            tests['Metric'] = metric
+            all_tests.append(tests)
+    
+    if all_tests:
+        all_tests_df = pd.concat(all_tests, ignore_index=True)
+        st.download_button(
+            "📥 Download All Pairwise Tests",
+            all_tests_df.to_csv(index=False),
+            "pairwise_tests.csv",
+            key="dl_pairwise"
+        )
+
+
+def _display_statistical_visualizations(combined_df: pd.DataFrame, models: List[str]):
+    """Display statistical visualizations."""
+    
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    available_metrics = [m for m in metrics if m in combined_df.columns]
+    
+    if not available_metrics:
+        return
+    
+    # Metric selection
+    metric = st.selectbox("Select metric:", available_metrics, key="stat_viz_metric")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Box plot with individual points
+        fig = px.box(
+            combined_df, x='Model', y=metric, color='Model',
+            points='all',  # Show all data points
+            title=f"{metric.replace('_', ' ')} Distribution by Model",
+            color_discrete_map={'DT': '#4285f4', 'LR': '#34a853', 'NN': '#fbbc04'}
+        )
+        fig.update_layout(
+            template="plotly_white",
+            title_x=0.5,
+            height=400,
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"box_{metric}")
+    
+    with col2:
+        # Violin plot
+        fig = px.violin(
+            combined_df, x='Model', y=metric, color='Model',
+            box=True, points='all',
+            title=f"{metric.replace('_', ' ')} Violin Plot",
+            color_discrete_map={'DT': '#4285f4', 'LR': '#34a853', 'NN': '#fbbc04'}
+        )
+        fig.update_layout(
+            template="plotly_white",
+            title_x=0.5,
+            height=400,
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True, key=f"violin_{metric}")
+    
+    # Paired difference plot
+    st.markdown("---")
+    st.markdown("### Paired Differences")
+    
+    # Create paired differences for the best pair
+    models_present = sorted(combined_df['Model'].unique())
+    
+    if len(models_present) >= 2:
+        # Pivot to align replicates
+        pivot = combined_df.pivot_table(
+            index='Replicate',
+            columns='Model',
+            values=metric
+        ).dropna()
+        
+        if len(pivot) >= 3 and len(models_present) >= 2:
+            m1, m2 = models_present[0], models_present[1]
+            
+            # Check if these columns exist
+            if m1 in pivot.columns and m2 in pivot.columns:
+                diffs = pivot[m1] - pivot[m2]
+                
+                fig = go.Figure()
+                fig.add_trace(go.Histogram(
+                    x=diffs,
+                    nbinsx=20,
+                    name=f'{m1} - {m2}',
+                    marker_color='#4285f4',
+                    opacity=0.7
+                ))
+                fig.add_vline(
+                    x=0, line_dash="dash", line_color="red",
+                    annotation_text="No difference"
+                )
+                fig.add_vline(
+                    x=np.mean(diffs), line_dash="solid", line_color="green",
+                    annotation_text=f"Mean diff: {np.mean(diffs):.4f}"
+                )
+                
+                fig.update_layout(
+                    title=f"Paired Differences: {m1} vs {m2}",
+                    xaxis_title=f"Difference in {metric.replace('_', ' ')}",
+                    yaxis_title="Frequency",
+                    template="plotly_white",
+                    title_x=0.5,
+                    height=350,
+                )
+                st.plotly_chart(fig, use_container_width=True, key=f"diff_hist_{metric}")
+                
+                # QQ plot for normality
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    fig = px.scatter(
+                        x=np.sort(stats.norm.ppf((np.arange(1, len(diffs)+1) - 0.5) / len(diffs))),
+                        y=np.sort(diffs),
+                        title="Q-Q Plot (Normality Check)",
+                        labels={'x': 'Theoretical Quantiles', 'y': 'Sample Quantiles'}
+                    )
+                    # Add reference line
+                    min_val = min(np.min(diffs), -3)
+                    max_val = max(np.max(diffs), 3)
+                    fig.add_trace(go.Scatter(
+                        x=[min_val, max_val], y=[min_val, max_val],
+                        mode='lines', line=dict(dash='dash', color='red'),
+                        name='Normal'
+                    ))
+                    fig.update_layout(template="plotly_white", title_x=0.5, height=350, showlegend=False)
+                    st.plotly_chart(fig, use_container_width=True, key=f"qq_{metric}")
+                
+                with col2:
+                    # Shapiro-Wilk test
+                    stat, p = stats.shapiro(diffs)
+                    st.markdown("**Normality Test (Shapiro-Wilk)**")
+                    st.metric("W statistic", f"{stat:.4f}")
+                    st.metric("p-value", f"{p:.4f}")
+                    if p > 0.05:
+                        st.success("✅ Differences are normally distributed → Use paired t-test")
+                    else:
+                        st.warning("⚠️ Differences are NOT normally distributed → Use Wilcoxon test")
+
+
+def _display_statistical_report(combined_df: pd.DataFrame, models: List[str], condition: str):
+    """Generate a statistical report text."""
+    from analysis import compute_all_pairwise_tests, compute_summary_with_ci, format_p_value
+    
+    st.markdown("### 📝 Statistical Report")
+    st.caption("APA-style summary for thesis chapter")
+    
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    available_metrics = [m for m in metrics if m in combined_df.columns]
+    
+    report_lines = []
+    report_lines.append(f"**Condition: {condition}**")
+    report_lines.append("")
+    
+    for metric in available_metrics:
+        metric_name = metric.replace('_', ' ')
+        
+        # Summaries
+        summaries = {}
+        for model in models:
+            model_data = combined_df[combined_df['Model'] == model][metric].dropna()
+            if len(model_data) >= 3:
+                summaries[model] = compute_summary_with_ci(
+                    pd.DataFrame({metric: model_data}), metric
+                )
+        
+        # Pairwise tests
+        tests = compute_all_pairwise_tests(combined_df, metric)
+        
+        report_lines.append(f"**{metric_name}**")
+        report_lines.append("")
+        
+        # Descriptive stats
+        for model, s in summaries.items():
+            report_lines.append(
+                f"- {model}: M = {s['mean']:.4f} (SD = {s['std']:.4f}), "
+                f"95% CI [{s['ci_95_lower']:.4f}, {s['ci_95_upper']:.4f}], "
+                f"N = {s['n']}"
+            )
+        
+        report_lines.append("")
+        
+        # Test results
+        # Test results
+        if not tests.empty:
+            for _, row in tests.iterrows():
+                sig = "significant" if row['Significant (Bonferroni)'] else "not significant"
+                p_str = format_p_value(row['P_Value'])
+                cohens_d = row["Cohen's d"]  # Extract first to avoid f-string escaping
+                report_lines.append(
+                    f"- {row['Comparison']}: {row['Test']}, "
+                    f"mean difference = {row['Mean_Diff']:.4f}, "
+                    f"p = {p_str}, "
+                    f"Cohen's d = {cohens_d:.3f} ({sig})"
+                )
+        
+        report_lines.append("")
+    
+    report_text = "\n".join(report_lines)
+    st.markdown(report_text)
+    
+    # Download report
+    st.download_button(
+        "📥 Download Statistical Report",
+        report_text,
+        f"statistical_report_{condition}.txt",
+        key="dl_report"
+    )
+
+
+def display_global_statistical_comparison(all_per_replicate_data: Dict):
+    """
+    Global comparison across all conditions.
+    Uses Friedman test for overall classifier comparison.
+    """
+    from analysis import (
+        compute_all_statistics,
+        friedman_test_across_conditions,
+        format_p_value,
+    )
+    
+    st.markdown("---")
+    st.markdown("## 🌐 Global Statistical Comparison (All Conditions)")
+    
+    if not all_per_replicate_data:
+        st.warning("No per-replicate data available.")
+        return
+    
+    conditions = list(all_per_replicate_data.keys())
+    models = set()
+    for cond_data in all_per_replicate_data.values():
+        models.update(cond_data.keys())
+    models = sorted(models)
+    
+    # Combine all data
+    all_data = []
+    for condition in conditions:
+        for model in models:
+            df = all_per_replicate_data.get(condition, {}).get(model)
+            if df is not None and not df.empty:
+                df_copy = df.copy()
+                df_copy['Condition'] = condition
+                df_copy['Model'] = model
+                all_data.append(df_copy)
+    
+    if not all_data:
+        st.warning("No data to analyze.")
+        return
+    
+    combined = pd.concat(all_data, ignore_index=True)
+    
+    # Friedman test per condition
+    st.markdown("### Friedman Test (Non-parametric Repeated Measures ANOVA)")
+    st.caption("Tests if classifiers differ significantly, accounting for condition effects")
+    
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    available_metrics = [m for m in metrics if m in combined.columns]
+    
+    for metric in available_metrics:
+        result = friedman_test_across_conditions(combined, metric)
+        
+        if result.get('test') == 'friedman':
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric(f"**{metric}**", "")
+            with col2:
+                st.metric("χ²", f"{result['statistic']:.2f}")
+            with col3:
+                st.metric("p-value", format_p_value(result['p_value']))
+            with col4:
+                st.metric("Kendall's W", f"{result.get('kendall_w', 0):.3f}")
+            
+            if result['significant']:
+                st.success(f"✅ Significant difference among classifiers for {metric}")
+            else:
+                st.info(f"ℹ️ No significant difference among classifiers for {metric}")
+    
+    # Global pairwise
+    st.markdown("---")
+    st.markdown("### Global Pairwise Comparisons (Across All Conditions)")
+    
+    from analysis import compute_all_pairwise_tests
+    
+    for metric in available_metrics:
+        st.markdown(f"**{metric}**")
+        tests = compute_all_pairwise_tests(combined, metric)
+        if not tests.empty:
+            display_df = tests.copy()
+            display_df['P_Value'] = display_df['P_Value'].apply(format_p_value)
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+    
+    # Download
+    st.download_button(
+        "📥 Download Global Statistics",
+        combined.to_csv(index=False),
+        "global_per_replicate_data.csv",
+        key="dl_global_stats"
+    )

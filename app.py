@@ -7,14 +7,16 @@ import matplotlib.pyplot as plt
 from matplotlib_venn import venn3
 from config import CONDITIONS_MAP, MODELS, RESULTS_DIR, ORIGINAL_DIR
 from data_loader import load_both_files, get_available_files_summary
-
+from typing import Dict, List, Optional, Tuple
 # Import tab renderers
 from tabs import (
     tab1_per_condition,
     tab2_performance_metrics,
     tab3_cross_condition,
     tab4_specific_analysis,
-    tab5_model_chain_comparison
+    tab5_model_chain_comparison,
+    tab7_satical_analysis,
+    tab8_correlation_analysis,
 )
 
 # Import shared CSS
@@ -363,28 +365,34 @@ def main():
             """, unsafe_allow_html=True)
     
     # ===== MAIN TABS =====
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab8, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "◈ Correlations & Rankings",
         "◈ Per-Condition Analysis",
+        "◈ Statical Analysis",
         "◈ Performance Metrics",
         "◈ Cross-Condition Summary",
         "◈ Specific Analysis", 
         "◈ Chain Comparison",
     ])
     
-
+    with tab8:  # NEW
+        tab8_correlation_analysis.render(all_data)
     with tab1:
         tab1_per_condition.render(all_data, summary, show_raw)
     
     with tab2:
-        tab2_performance_metrics.render(all_data)
+        tab7_satical_analysis.render(all_data, summary)
     
     with tab3:
+        tab2_performance_metrics.render(all_data)
+    
+    with tab4:
         tab3_cross_condition.render()
 
-    with tab4:
+    with tab5:
         tab4_specific_analysis.render(all_data, summary)    
 
-    with tab5:
+    with tab6:
         tab5_model_chain_comparison.render(all_data, summary)
     
 

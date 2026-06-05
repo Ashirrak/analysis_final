@@ -184,11 +184,11 @@ def get_all_tags_from_result(result_df: pd.DataFrame) -> List[int]:
             tags.add(tag_num)
     return sorted(list(tags))
 
- 
 def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
     """
     Extract per-tag statistics from result dataset.
-    Takes UNIQUE values per tag (first row since all rows for same tag have same aggregates).
+    Counts RDP events by splitting comma-separated RDP_Event_ID per row.
+    Each occurrence counts (even if same RDP ID appears in multiple rows).
     """
     if result_df is None or len(result_df) == 0:
         return pd.DataFrame()
@@ -197,22 +197,6 @@ def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
     
     if not all_tags:
         return pd.DataFrame()
-    
-    # Define the CORRECT columns to use
-    tag_level_columns = [
-        'Tag_RDP_Count',           # Total matched RDP events
-        'Tag_Santa_Count',         # Total matched Santa events
-        'Tag_Original_RDP_Count',  # Total original RDP events
-        'Tag_Original_Santa_Count', # Total original Santa events
-        'Tag_Remaining_RDP',
-        'Tag_Remaining_Santa',
-        'Tag_RDP_Match_Rate',
-        'Tag_Santa_Match_Rate',
-        'RDP_Santa_Equal',
-    ]
-    
-    # Check which columns exist
-    available_cols = [col for col in tag_level_columns if col in result_df.columns]
     
     per_tag_data = []
     
@@ -227,80 +211,77 @@ def extract_tag_level_stats(result_df: pd.DataFrame) -> pd.DataFrame:
         if not tag_rows:
             continue
         
-        # Take first row (all rows for same tag have identical aggregate values)
         first_row = tag_rows[0]
         
-        tag_stats = {
-            'Tag_Number': tag_num,
-            'Row_Count': len(tag_rows)
-        }
+        tag_stats = {'Tag_Number': tag_num, 'Row_Count': len(tag_rows)}
         
-        # Extract the CORRECT values
+        # ====================================================================
+        # COUNT RDP EVENTS: Split each row's RDP_Event_ID by comma
+        # "1,2,13" = 3 events. Count EVERY occurrence (no dedup).
+        # ====================================================================
+        total_rdp_count = 0
+        rdp_detail_list = []  # For debugging
+        
+        for row in tag_rows:
+            rdp_event_id = str(row.get('RDP_Event_ID', ''))
+            if rdp_event_id and rdp_event_id != 'nan':
+                parts = [p.strip().rstrip('.0') for p in rdp_event_id.replace(',', ' ').split() 
+                        if p.strip().rstrip('.0').isdigit()]
+                total_rdp_count += len(parts)
+                rdp_detail_list.extend(parts)
+        
+        tag_stats['Result_RDP'] = total_rdp_count
+        # Store for debugging
+        tag_stats['_rdp_detail'] = rdp_detail_list
+        tag_stats['_rdp_unique_count'] = len(set(rdp_detail_list))
+        
+        # ====================================================================
+        # COUNT SANTA EVENTS (unique Santa_ID)
+        # ====================================================================
+        santa_count = 0
+        for row in tag_rows:
+            santa_id = str(row.get('Santa_ID', ''))
+            if santa_id and santa_id != 'nan':
+                santa_count += 1
+        
+        tag_stats['Result_Santa'] = santa_count
+        
+        # Original counts
         if 'Tag_Original_RDP_Count' in result_df.columns:
             tag_stats['Original_RDP'] = safe_parse_numeric(first_row.get('Tag_Original_RDP_Count', 0))
-        
         if 'Tag_Original_Santa_Count' in result_df.columns:
             tag_stats['Original_Santa'] = safe_parse_numeric(first_row.get('Tag_Original_Santa_Count', 0))
         
-        if 'Tag_RDP_Count' in result_df.columns:
-            tag_stats['Result_RDP'] = safe_parse_numeric(first_row.get('Tag_RDP_Count', 0))
-        
-        if 'Tag_Santa_Count' in result_df.columns:
-            tag_stats['Result_Santa'] = safe_parse_numeric(first_row.get('Tag_Santa_Count', 0))
-        
-        if 'Tag_Remaining_RDP' in result_df.columns:
-            tag_stats['Remaining_RDP'] = safe_parse_numeric(first_row.get('Tag_Remaining_RDP', 0))
-        
-        if 'Tag_Remaining_Santa' in result_df.columns:
-            tag_stats['Remaining_Santa'] = safe_parse_numeric(first_row.get('Tag_Remaining_Santa', 0))
+        # Remaining
+        tag_stats['Remaining_RDP'] = max(0, tag_stats.get('Original_RDP', 0) - total_rdp_count)
+        tag_stats['Remaining_Santa'] = max(0, tag_stats.get('Original_Santa', 0) - santa_count)
         
         # Match rates
-        if 'Tag_RDP_Match_Rate' in result_df.columns:
-            val = first_row.get('Tag_RDP_Match_Rate')
-            if not pd.isna(val):
-                val_str = str(val)
-                if '%' in val_str:
-                    tag_stats['RDP_Match_Rate'] = float(val_str.replace('%', '')) / 100
-                else:
-                    tag_stats['RDP_Match_Rate'] = safe_parse_numeric(val)
-            else:
-                tag_stats['RDP_Match_Rate'] = 0.0
+        orig_rdp = tag_stats.get('Original_RDP', 0)
+        tag_stats['RDP_Match_Rate'] = (total_rdp_count / orig_rdp) if orig_rdp > 0 else 0.0
         
-        if 'Tag_Santa_Match_Rate' in result_df.columns:
-            val = first_row.get('Tag_Santa_Match_Rate')
-            if not pd.isna(val):
-                val_str = str(val)
-                if '%' in val_str:
-                    tag_stats['Santa_Match_Rate'] = float(val_str.replace('%', '')) / 100
-                else:
-                    tag_stats['Santa_Match_Rate'] = safe_parse_numeric(val)
-            else:
-                tag_stats['Santa_Match_Rate'] = 0.0
+        orig_santa = tag_stats.get('Original_Santa', 0)
+        tag_stats['Santa_Match_Rate'] = (santa_count / orig_santa) if orig_santa > 0 else 0.0
         
-        # RDP_Santa_Equal
-        if 'RDP_Santa_Equal' in result_df.columns:
-            equal_count = 0
-            diff_count = 0
-            for row in tag_rows:
-                val = row.get('RDP_Santa_Equal')
-                parsed = parse_rdp_santa_equal(val)
-                if parsed['is_equal']:
-                    equal_count += 1
-                elif parsed['is_diff']:
-                    diff_count += 1
-            tag_stats['Equal_Count'] = equal_count
-            tag_stats['Diff_Count'] = diff_count
-            tag_stats['Is_Equal'] = (equal_count > 0)
-        
-        # Calculate totals
+        # Totals
         tag_stats['Original_Total'] = tag_stats.get('Original_RDP', 0) + tag_stats.get('Original_Santa', 0)
-        tag_stats['Result_Total'] = tag_stats.get('Result_RDP', 0) + tag_stats.get('Result_Santa', 0)
+        tag_stats['Result_Total'] = total_rdp_count + santa_count
         
         per_tag_data.append(tag_stats)
     
-    return pd.DataFrame(per_tag_data)
-
-
+    result_df_out = pd.DataFrame(per_tag_data)
+    
+    # ====================================================================
+    # DEBUG: Print summary to help identify missing RDPs
+    # ====================================================================
+    total_result_rdp = result_df_out['Result_RDP'].sum() if not result_df_out.empty else 0
+    total_unique_rdp = sum(len(set(row['_rdp_detail'])) for _, row in result_df_out.iterrows()) if not result_df_out.empty else 0
+    
+    # Remove debug columns for final output
+    if '_rdp_detail' in result_df_out.columns:
+        result_df_out = result_df_out.drop(columns=['_rdp_detail', '_rdp_unique_count'], errors='ignore')
+    
+    return result_df_out
 def compute_comparison_stats(original_stats: Dict, result_tag_df: pd.DataFrame, 
                              expected_tag_count: int = 100) -> pd.DataFrame:
     """
@@ -409,8 +390,9 @@ def compute_summary_totals(comparison_df: pd.DataFrame, original_stats: Dict = N
         'total_unmatched_rdp': 0,
         'total_unmatched_santa': 0,
         'false_positive_rate': 0.0,
-        'avg_rdp_match_rate': 0.0,
-        'avg_santa_match_rate': 0.0,
+        'rdp_match_rate_eligible': 0.0,
+        'total_rdp_in_eligible_tags': 0,
+        'total_matched_rdp_in_eligible_tags': 0,
         'zero_rdp_tags': [],
         'zero_santa_tags': [],
         'exact_matches': 0,
@@ -428,32 +410,48 @@ def compute_summary_totals(comparison_df: pd.DataFrame, original_stats: Dict = N
         totals['tags_in_results'] = int(comparison_df['In_Results'].sum())
     
     totals['tags_in_both'] = int(((comparison_df['In_Original'] == True) & (comparison_df['In_Results'] == True)).sum())
-    totals['missing_in_both'] = int(((comparison_df['In_Original'] == False) & (comparison_df['In_Results'] == False)).sum())
     totals['missing_in_results'] = int(((comparison_df['In_Original'] == True) & (comparison_df['In_Results'] == False)).sum())
     
-    # ===== USE ORIGINAL STATS FOR TRUE TOTALS (includes ALL tags) =====
+    # ===== USE ORIGINAL STATS FOR TRUE TOTALS =====
     if original_stats:
         totals['total_original_rdp'] = original_stats.get('total_rdp_events', 0)
         totals['total_original_santa'] = original_stats.get('total_santa_events', 0)
         totals['total_original_events'] = original_stats.get('total_events', 0)
         totals['zero_rdp_tags'] = original_stats.get('zero_rdp_tags', [])
         totals['zero_santa_tags'] = original_stats.get('zero_santa_tags', [])
+        
+        # ===== RDP+ SANTA+ TAGS =====
+        tags_with_both = original_stats.get('tags_with_both', [])
+        
+        # ===== CRITICAL FIX: Count RDP events in eligible tags =====
+        # This should count ALL RDP rows for tags that have both RDP and SANTA
+        total_rdp_eligible = 0
+        for tag_num in tags_with_both:
+            tag_data = original_stats.get('per_tag', {}).get(tag_num, {})
+            total_rdp_eligible += tag_data.get('rdp_count', 0)
+        totals['total_rdp_in_eligible_tags'] = total_rdp_eligible
+        
+        # ===== Count matched RDP in those same eligible tags =====
+        matched_rdp_eligible = 0
+        for _, row in comparison_df.iterrows():
+            if row.get('In_Results', False):
+                tag_num = int(row['Tag_Number'])
+                if tag_num in tags_with_both:
+                    # Use Result_RDP which already counts chains properly (split by comma)
+                    matched_rdp_eligible += row.get('Result_RDP', 0)
+        totals['total_matched_rdp_in_eligible_tags'] = matched_rdp_eligible
+        
+        # RDP Match Rate for eligible tags
+        if total_rdp_eligible > 0:
+            totals['rdp_match_rate_eligible'] = (matched_rdp_eligible / total_rdp_eligible) * 100
     else:
-        # Fallback to summing from comparison_df
         if 'Original_RDP_True' in comparison_df.columns:
             totals['total_original_rdp'] = int(comparison_df['Original_RDP_True'].sum())
         if 'Original_Santa_True' in comparison_df.columns:
             totals['total_original_santa'] = int(comparison_df['Original_Santa_True'].sum())
         totals['total_original_events'] = totals['total_original_rdp'] + totals['total_original_santa']
-        
-        for _, row in comparison_df.iterrows():
-            if row.get('In_Original', False):
-                if row.get('Original_RDP_True', 0) == 0:
-                    totals['zero_rdp_tags'].append(int(row['Tag_Number']))
-                if row.get('Original_Santa_True', 0) == 0:
-                    totals['zero_santa_tags'].append(int(row['Tag_Number']))
     
-    # Result totals (from CSV - only tags in results)
+    # Result totals from comparison_df (already properly counted in extract_tag_level_stats)
     if 'Result_RDP' in comparison_df.columns:
         totals['total_result_rdp'] = int(comparison_df['Result_RDP'].sum())
     
@@ -461,7 +459,6 @@ def compute_summary_totals(comparison_df: pd.DataFrame, original_stats: Dict = N
         totals['total_result_santa'] = int(comparison_df['Result_Santa'].sum())
     
     totals['total_result_events'] = totals['total_result_rdp'] + totals['total_result_santa']
-    totals['total_matched_events'] = totals['total_result_events']
     
     if 'Remaining_RDP' in comparison_df.columns:
         totals['total_unmatched_rdp'] = int(comparison_df['Remaining_RDP'].sum())
@@ -471,7 +468,7 @@ def compute_summary_totals(comparison_df: pd.DataFrame, original_stats: Dict = N
     
     # False Positive Rate
     if totals['total_result_rdp'] > 0:
-        totals['false_positive_rate'] = totals['total_unmatched_rdp'] / totals['total_result_rdp']
+        totals['false_positive_rate'] = (totals['total_unmatched_rdp'] / totals['total_result_rdp']) * 100
     
     if 'Is_Equal' in comparison_df.columns:
         totals['equal_count'] = int(comparison_df['Is_Equal'].sum())
@@ -479,19 +476,7 @@ def compute_summary_totals(comparison_df: pd.DataFrame, original_stats: Dict = N
     if 'Match_Status' in comparison_df.columns:
         totals['exact_matches'] = int((comparison_df['Match_Status'] == '✅ Exact Match').sum())
     
-    # Average match rates
-    if 'RDP_Match_Rate' in comparison_df.columns:
-        valid_rates = comparison_df[comparison_df['In_Results'] == True]['RDP_Match_Rate'].dropna()
-        valid_rates = valid_rates[valid_rates > 0]
-        totals['avg_rdp_match_rate'] = valid_rates.mean() if len(valid_rates) > 0 else 0.0
-        
-    if 'Santa_Match_Rate' in comparison_df.columns:
-        valid_rates = comparison_df[comparison_df['In_Results'] == True]['Santa_Match_Rate'].dropna()
-        valid_rates = valid_rates[valid_rates > 0]
-        totals['avg_santa_match_rate'] = valid_rates.mean() if len(valid_rates) > 0 else 0.0
-    
     return totals
-
 
 def get_missing_tags_list(comparison_df: pd.DataFrame) -> Dict:
     """Get organized lists of missing tags."""
@@ -822,11 +807,741 @@ def compute_study_summary_all_conditions() -> pd.DataFrame:
     return pd.DataFrame(summary_data)
 
 
+"""
+Statistical Analysis Module for Per-Replicate Comparisons
+=========================================================
+Performs paired hypothesis tests, confidence intervals,
+and effect size calculations across classifiers and conditions.
+"""
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+from typing import Dict, List, Tuple, Optional
+import warnings
+warnings.filterwarnings('ignore')
+
+
+def compute_per_replicate_metrics(
+    result_df: pd.DataFrame, 
+    original_stats: Dict,
+    replicate_ids: List[int]
+    ) -> pd.DataFrame:
+    """
+    Extract per-replicate metrics from the result DataFrame.
+    
+    Each row in result_df has a Santa_Tag or Tag column containing the replicate ID.
+    Groups by replicate and computes:
+    - Accuracy (correct recombinant identification)
+    - FPR (false positive rate)
+    - BP Distance (mean breakpoint distance)
+    
+    Args:
+        result_df: Results DataFrame with Tag/Replicate column
+        original_stats: Original dataset statistics per tag
+        replicate_ids: List of expected replicate IDs
+        
+    Returns:
+        DataFrame with columns: Replicate, Accuracy, FPR, BP_Distance, N_Matches
+    """
+    from analysis import (
+        compute_study_metrics, 
+        analyze_original_by_tool,
+        extract_tag_number_from_row,
+        analyze_breakpoint_distances,
+        analyze_recombinant_accuracy
+    )
+    
+    per_replicate_data = []
+    
+    if result_df is None or len(result_df) == 0:
+        return pd.DataFrame()
+    
+    # Find tag/replicate column
+    tag_col = None
+    for col in ['Tag', 'tag', 'Santa_Tag', 'Replicate', 'replicate']:
+        if col in result_df.columns:
+            tag_col = col
+            break
+    
+    if tag_col is None:
+        return pd.DataFrame()
+    
+    # Extract tag numbers
+    def extract_tag(val):
+        if pd.isna(val):
+            return None
+        import re
+        numbers = re.findall(r'\d+', str(val))
+        return int(numbers[0]) if numbers else None
+    
+    result_df_copy = result_df.copy()
+    result_df_copy['_tag_num'] = result_df_copy[tag_col].apply(extract_tag)
+    
+    # Group by tag number
+    for tag_num in replicate_ids:
+        tag_rows = result_df_copy[result_df_copy['_tag_num'] == tag_num]
+        
+        if len(tag_rows) == 0:
+            # No results for this replicate
+            per_replicate_data.append({
+                'Replicate': tag_num,
+                'Accuracy': np.nan,
+                'FPR': np.nan,
+                'BP_Distance': np.nan,
+                'N_Matches': 0,
+                'N_Incorrect': 0,
+            })
+            continue
+        
+        # Get original counts for this tag
+        orig_tag_data = original_stats.get('per_tag', {}).get(tag_num, {})
+        orig_rdp = orig_tag_data.get('rdp_count', 0)
+        
+        # Count matched RDP events (split comma-separated IDs)
+        total_matched = 0
+        for _, row in tag_rows.iterrows():
+            rdp_id = str(row.get('RDP_Event_ID', ''))
+            if rdp_id and rdp_id != 'nan':
+                parts = [p.strip().rstrip('.0') for p in rdp_id.replace(',', ' ').split()
+                        if p.strip().rstrip('.0').isdigit()]
+                total_matched += len(parts)
+        
+        # Count incorrect parental (Step 7)
+        incorrect = 0
+        if 'Source_Tab' in tag_rows.columns:
+            for _, row in tag_rows.iterrows():
+                source = str(row['Source_Tab']).lower() if not pd.isna(row['Source_Tab']) else ''
+                if 'step 7' in source or 'step7' in source:
+                    incorrect += 1
+        
+        # Accuracy
+        accuracy = (total_matched - incorrect) / total_matched if total_matched > 0 else np.nan
+        
+        # FPR (false positive = unmatched / original)
+        fpr = (orig_rdp - total_matched) / orig_rdp if orig_rdp > 0 else np.nan
+        
+        # Breakpoint distance (for this replicate's rows)
+        bp_dists = analyze_breakpoint_distances(tag_rows)
+        mean_bp = bp_dists['mean_total_distance'] if bp_dists['total_distances'] else np.nan
+        
+        per_replicate_data.append({
+            'Replicate': tag_num,
+            'Accuracy': accuracy,
+            'FPR': fpr,
+            'BP_Distance': mean_bp,
+            'N_Matches': total_matched,
+            'N_Incorrect': incorrect,
+        })
+    
+    return pd.DataFrame(per_replicate_data)
+
+
+def paired_comparison_test(
+    data1: np.ndarray, 
+    data2: np.ndarray,
+    test_type: str = 'auto',
+    alpha: float = 0.05
+    ) -> Dict:
+    """
+    Perform paired comparison between two classifiers.
+    
+    Args:
+        data1, data2: Paired metric values (same replicates)
+        test_type: 'auto' (chooses based on normality), 'ttest', or 'wilcoxon'
+        alpha: Significance level
+        
+    Returns:
+        Dictionary with test results
+    """
+    # Remove NaN pairs
+    mask = ~(np.isnan(data1) | np.isnan(data2))
+    d1 = data1[mask]
+    d2 = data2[mask]
+    
+    if len(d1) < 3:
+        return {
+            'test': 'insufficient_data',
+            'n_pairs': len(d1),
+            'statistic': np.nan,
+            'p_value': np.nan,
+            'significant': False,
+            'mean_diff': np.nan,
+            'ci_95': (np.nan, np.nan),
+        }
+    
+    mean_diff = np.mean(d1 - d2)
+    
+    if test_type == 'auto':
+        # Test normality of differences
+        _, p_norm = stats.shapiro(d1 - d2)
+        test_type = 'ttest' if p_norm > 0.05 else 'wilcoxon'
+    
+    if test_type == 'ttest':
+        statistic, p_value = stats.ttest_rel(d1, d2)
+        test_name = 'paired_t_test'
+        # Confidence interval for mean difference
+        se = stats.sem(d1 - d2)
+        ci = stats.t.interval(0.95, len(d1)-1, loc=mean_diff, scale=se)
+    else:
+        statistic, p_value = stats.wilcoxon(d1, d2, alternative='two-sided')
+        test_name = 'wilcoxon_signed_rank'
+        # Bootstrap CI for median difference
+        diffs = d1 - d2
+        boot_diffs = np.random.choice(diffs, size=(10000, len(diffs)), replace=True)
+        boot_medians = np.median(boot_diffs, axis=1)
+        ci = (np.percentile(boot_medians, 2.5), np.percentile(boot_medians, 97.5))
+    
+    # Effect size (Cohen's d for paired)
+    d_pooled = np.mean(d1 - d2) / np.std(d1 - d2, ddof=1) if np.std(d1 - d2) > 0 else 0
+    
+    return {
+        'test': test_name,
+        'n_pairs': len(d1),
+        'statistic': statistic,
+        'p_value': p_value,
+        'significant': p_value < alpha,
+        'mean_diff': mean_diff,
+        'ci_95': ci,
+        'cohens_d': d_pooled,
+        'alpha': alpha,
+    }
+
+
+def compute_all_pairwise_tests(
+    metrics_df: pd.DataFrame,
+    metric_col: str = 'Accuracy',
+    alpha: float = 0.05
+    ) -> pd.DataFrame:
+    """
+    Compute all pairwise comparisons between classifiers.
+    
+    Args:
+        metrics_df: DataFrame with columns: Replicate, Model, Accuracy, FPR, BP_Distance
+        metric_col: Which metric to compare
+        alpha: Significance level
+        
+    Returns:
+        DataFrame with pairwise comparison results
+    """
+    models = metrics_df['Model'].unique()
+    results = []
+    
+    for i, m1 in enumerate(models):
+        for m2 in models[i+1:]:
+            d1 = metrics_df[metrics_df['Model'] == m1][metric_col].values
+            d2 = metrics_df[metrics_df['Model'] == m2][metric_col].values
+            
+            # Ensure same replicates
+            rep1 = metrics_df[metrics_df['Model'] == m1]['Replicate'].values
+            rep2 = metrics_df[metrics_df['Model'] == m2]['Replicate'].values
+            common_reps = np.intersect1d(rep1, rep2)
+            
+            if len(common_reps) < 3:
+                continue
+            
+            mask1 = np.isin(rep1, common_reps)
+            mask2 = np.isin(rep2, common_reps)
+            
+            test_result = paired_comparison_test(
+                d1[mask1], d2[mask2], 
+                test_type='auto', 
+                alpha=alpha
+            )
+            
+            # Bonferroni correction
+            n_comparisons = len(models) * (len(models) - 1) / 2
+            bonferroni_alpha = alpha / n_comparisons
+            
+            results.append({
+                'Comparison': f'{m1} vs {m2}',
+                'Model_1': m1,
+                'Model_2': m2,
+                'Metric': metric_col,
+                'Test': test_result['test'],
+                'N_Pairs': test_result['n_pairs'],
+                'Mean_Diff': test_result['mean_diff'],
+                'CI_95_Lower': test_result['ci_95'][0],
+                'CI_95_Upper': test_result['ci_95'][1],
+                'Statistic': test_result['statistic'],
+                'P_Value': test_result['p_value'],
+                'Significant (α=0.05)': test_result['significant'],
+                'Significant (Bonferroni)': test_result['p_value'] < bonferroni_alpha,
+                "Cohen's d": test_result['cohens_d'],
+            })
+    
+    return pd.DataFrame(results)
+
+
+def compute_summary_with_ci(
+    per_replicate_df: pd.DataFrame,
+    metric_col: str = 'Accuracy'
+    ) -> Dict:
+    """
+    Compute summary statistics with confidence intervals.
+    
+    Args:
+        per_replicate_df: DataFrame with per-replicate metrics
+        metric_col: Metric column name
+        
+    Returns:
+        Dictionary with mean, std, CI, median, IQR
+    """
+    values = per_replicate_df[metric_col].dropna().values
+    
+    if len(values) < 3:
+        return {
+            'mean': np.nan, 'std': np.nan, 'sem': np.nan,
+            'ci_95_lower': np.nan, 'ci_95_upper': np.nan,
+            'median': np.nan, 'q1': np.nan, 'q3': np.nan,
+            'n': len(values),
+        }
+    
+    mean = np.mean(values)
+    std = np.std(values, ddof=1)
+    sem = stats.sem(values)
+    ci = stats.t.interval(0.95, len(values)-1, loc=mean, scale=sem)
+    median = np.median(values)
+    q1, q3 = np.percentile(values, [25, 75])
+    
+    return {
+        'mean': mean,
+        'std': std,
+        'sem': sem,
+        'ci_95_lower': ci[0],
+        'ci_95_upper': ci[1],
+        'median': median,
+        'q1': q1,
+        'q3': q3,
+        'iqr': q3 - q1,
+        'n': len(values),
+    }
+
+
+def friedman_test_across_conditions(
+    metrics_df: pd.DataFrame,
+    metric_col: str = 'Accuracy'
+    ) -> Dict:
+    """
+    Friedman test (non-parametric repeated measures ANOVA).
+    Tests if classifiers differ significantly across conditions.
+    
+    Args:
+        metrics_df: DataFrame with Model, Condition, and metric
+        metric_col: Metric to test
+        
+    Returns:
+        Dictionary with test results
+    """
+    from scipy.stats import friedmanchisquare
+    
+    models = sorted(metrics_df['Model'].unique())
+    
+    if len(models) < 2:
+        return {'test': 'insufficient_models', 'n_models': len(models)}
+    
+    # Pivot to get models as columns
+    pivot = metrics_df.pivot_table(
+        index=['Condition', 'Replicate'],
+        columns='Model',
+        values=metric_col
+    ).dropna()
+    
+    if len(pivot) < 3:
+        return {'test': 'insufficient_data', 'n_blocks': len(pivot)}
+    
+    # Extract columns for each model
+    groups = [pivot[m].values for m in models]
+    
+    try:
+        statistic, p_value = friedmanchisquare(*groups)
+        
+        # Effect size (Kendall's W)
+        n = len(pivot)
+        k = len(models)
+        W = statistic / (n * (k - 1)) if n > 0 and k > 1 else 0
+        
+        return {
+            'test': 'friedman',
+            'n_blocks': n,
+            'n_models': k,
+            'statistic': statistic,
+            'p_value': p_value,
+            'significant': p_value < 0.05,
+            'kendall_w': W,
+            'interpretation': f'{"Significant" if p_value < 0.05 else "No significant"} difference among classifiers'
+        }
+    except Exception as e:
+        return {'test': 'error', 'error': str(e)}
+
+
+def compute_all_statistics(
+    all_per_replicate_data: Dict,
+    conditions: List[str],
+    models: List[str],
+    metrics: List[str] = ['Accuracy', 'FPR', 'BP_Distance']
+    ) -> Dict:
+    """
+    Master function: compute all statistics for all conditions and models.
+    
+    Args:
+        all_per_replicate_data: Dict[condition][model] = per_replicate DataFrame
+        conditions: List of condition names
+        models: List of model names
+        metrics: List of metric column names
+        
+    Returns:
+        Dictionary with all statistical results
+    """
+    results = {
+        'summaries': {},        # Per condition, per model summaries
+        'pairwise_tests': {},   # Per condition, per metric pairwise tests
+        'friedman_tests': {},   # Per condition, per metric Friedman tests
+        'global_pairwise': {},  # Across all conditions
+    }
+    
+    for condition in conditions:
+        results['summaries'][condition] = {}
+        results['pairwise_tests'][condition] = {}
+        results['friedman_tests'][condition] = {}
+        
+        # Combine all models for this condition
+        cond_data = []
+        for model in models:
+            df = all_per_replicate_data.get(condition, {}).get(model)
+            if df is not None and not df.empty:
+                df_copy = df.copy()
+                df_copy['Model'] = model
+                df_copy['Condition'] = condition
+                cond_data.append(df_copy)
+                
+                # Summary per model
+                results['summaries'][condition][model] = {}
+                for metric in metrics:
+                    if metric in df_copy.columns:
+                        results['summaries'][condition][model][metric] = \
+                            compute_summary_with_ci(df_copy, metric)
+        
+        if len(cond_data) >= 2:
+            combined = pd.concat(cond_data, ignore_index=True)
+            
+            # Pairwise tests per metric
+            for metric in metrics:
+                if metric in combined.columns:
+                    results['pairwise_tests'][condition][metric] = \
+                        compute_all_pairwise_tests(combined, metric)
+                    
+                    # Friedman test
+                    results['friedman_tests'][condition][metric] = \
+                        friedman_test_across_conditions(combined, metric)
+    
+    # Global pairwise (across all conditions)
+    all_combined = []
+    for condition in conditions:
+        for model in models:
+            df = all_per_replicate_data.get(condition, {}).get(model)
+            if df is not None and not df.empty:
+                df_copy = df.copy()
+                df_copy['Model'] = model
+                df_copy['Condition'] = condition
+                all_combined.append(df_copy)
+    
+    if all_combined:
+        global_df = pd.concat(all_combined, ignore_index=True)
+        results['global_pairwise'] = {}
+        for metric in metrics:
+            if metric in global_df.columns:
+                results['global_pairwise'][metric] = \
+                    compute_all_pairwise_tests(global_df, metric)
+    
+    return results
+
+
+def format_p_value(p: float, alpha: float = 0.05) -> str:
+    """Format p-value with significance stars."""
+    if pd.isna(p):
+        return 'N/A'
+    
+    if p < 0.001:
+        stars = '***'
+    elif p < 0.01:
+        stars = '**'
+    elif p < 0.05:
+        stars = '*'
+    else:
+        stars = 'ns'
+    
+    return f'{p:.4f} {stars}'
+
+
+def create_results_table_apa_style(
+    summaries: Dict,
+    pairwise_tests: Dict,
+    metric: str = 'Accuracy',
+    condition: str = None
+    ) -> pd.DataFrame:
+    """
+    Create an APA-style results table.
+    
+    Args:
+        summaries: Summary statistics
+        pairwise_tests: Pairwise test results
+        metric: Metric name
+        condition: Specific condition (or None for global)
+        
+    Returns:
+        Formatted DataFrame
+    """
+    rows = []
+    
+    if condition:
+        cond_summaries = summaries.get(condition, {})
+    else:
+        # Aggregate across conditions
+        cond_summaries = {}
+        # This would require aggregation logic
+    
+    for model, model_stats in cond_summaries.items():
+        metric_stats = model_stats.get(metric, {})
+        
+        rows.append({
+            'Model': model,
+            'M': f"{metric_stats.get('mean', 0):.4f}",
+            'SD': f"{metric_stats.get('std', 0):.4f}",
+            '95% CI': f"[{metric_stats.get('ci_95_lower', 0):.4f}, {metric_stats.get('ci_95_upper', 0):.4f}]",
+            'Mdn': f"{metric_stats.get('median', 0):.4f}",
+            'IQR': f"[{metric_stats.get('q1', 0):.4f}, {metric_stats.get('q3', 0):.4f}]",
+            'N': metric_stats.get('n', 0),
+        })
+    
+    return pd.DataFrame(rows)
 
 
 
 
+"""
+Additional Analysis Functions
+==============================
+Correlation analysis, boxplot data preparation, and condition-specific comparisons.
+"""
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+from typing import Dict, List, Tuple, Optional
 
 
+def compute_metric_correlations(per_replicate_df: pd.DataFrame) -> Dict:
+    """
+    Compute correlations between the three metrics (Accuracy, FPR, BP Distance).
+    
+    Args:
+        per_replicate_df: DataFrame with columns Accuracy, FPR, BP_Distance
+        
+    Returns:
+        Dict with correlation matrices (Pearson, Spearman) and p-values
+    """
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    available = [m for m in metrics if m in per_replicate_df.columns]
+    
+    if len(available) < 2:
+        return {'error': 'Need at least 2 metrics'}
+    
+    data = per_replicate_df[available].dropna()
+    
+    results = {
+        'pearson': {'matrix': None, 'p_values': None},
+        'spearman': {'matrix': None, 'p_values': None},
+        'n_samples': len(data),
+    }
+    
+    if len(data) >= 3:
+        # Pearson correlation
+        pearson_r = np.zeros((len(available), len(available)))
+        pearson_p = np.zeros((len(available), len(available)))
+        
+        for i, m1 in enumerate(available):
+            for j, m2 in enumerate(available):
+                if i == j:
+                    pearson_r[i, j] = 1.0
+                    pearson_p[i, j] = 0.0
+                else:
+                    r, p = stats.pearsonr(data[m1], data[m2])
+                    pearson_r[i, j] = r
+                    pearson_p[i, j] = p
+        
+        results['pearson']['matrix'] = pd.DataFrame(pearson_r, index=available, columns=available)
+        results['pearson']['p_values'] = pd.DataFrame(pearson_p, index=available, columns=available)
+        
+        # Spearman correlation
+        spearman_r = np.zeros((len(available), len(available)))
+        spearman_p = np.zeros((len(available), len(available)))
+        
+        for i, m1 in enumerate(available):
+            for j, m2 in enumerate(available):
+                if i == j:
+                    spearman_r[i, j] = 1.0
+                    spearman_p[i, j] = 0.0
+                else:
+                    r, p = stats.spearmanr(data[m1], data[m2])
+                    spearman_r[i, j] = r
+                    spearman_p[i, j] = p
+        
+        results['spearman']['matrix'] = pd.DataFrame(spearman_r, index=available, columns=available)
+        results['spearman']['p_values'] = pd.DataFrame(spearman_p, index=available, columns=available)
+    
+    return results
+
+
+def compute_correlation_with_biological_params(
+    summary_df: pd.DataFrame
+    ) -> Dict:
+    """
+    Compute correlations between model performance and biological parameters (μ, r).
+    
+    Args:
+        summary_df: DataFrame with columns: Condition, Model, μ, r, Accuracy, FPR, BP_Distance
+        
+    Returns:
+        Dict with correlation results per model
+    """
+    results = {}
+    
+    for model in summary_df['Model'].unique():
+        model_data = summary_df[summary_df['Model'] == model]
+        
+        for metric in ['Accuracy', 'FPR', 'BP_Distance']:
+            # Correlation with μ
+            if 'μ' in model_data.columns:
+                r_mu, p_mu = stats.spearmanr(model_data['μ'], model_data[metric])
+                mu_values = model_data['μ'].values
+                metric_values = model_data[metric].dropna().values
+                
+                # Ensure same length
+                valid_idx = ~np.isnan(metric_values) if len(metric_values) == len(mu_values) else slice(None)
+                
+                if len(mu_values) == len(metric_values):
+                    r_mu, p_mu = stats.spearmanr(mu_values, metric_values)
+                    correlations[f'{metric}_vs_μ'] = {
+                        'spearman_r': r_mu,
+                        'p_value': p_mu,
+                        'significant': p_mu < 0.05,
+                    }
+            
+            # Correlation with r (recombination rate)
+            if 'r' in model_data.columns:
+                r_values = model_data['r'].values
+                metric_values = model_data[metric].dropna().values
+                
+                if len(r_values) == len(metric_values):
+                    r_r, p_r = stats.spearmanr(r_values, metric_values)
+                    correlations[f'{metric}_vs_r'] = {
+                        'spearman_r': r_r,
+                        'p_value': p_r,
+                        'significant': p_r < 0.05,
+                    }
+        
+        results[model] = correlations
+    
+    return results
+
+
+def prepare_correlation_heatmap_data(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare a correlation matrix for all metrics × biological parameters.
+    """
+    metrics = ['Accuracy', 'FPR', 'BP_Distance']
+    bio_params = ['μ', 'r']
+    
+    all_cols = [c for c in metrics + bio_params if c in summary_df.columns]
+    corr_data = summary_df[all_cols].dropna()
+    
+    if len(corr_data) < 3:
+        return pd.DataFrame()
+    
+    # Compute Spearman correlation matrix
+    corr_matrix = corr_data.corr(method='spearman')
+    
+    return corr_matrix
+
+
+def compute_condition_ranking(
+    per_replicate_data: Dict,
+    conditions: List[str],
+    models: List[str],
+    metric: str = 'Accuracy'
+    ) -> pd.DataFrame:
+    """
+    Rank models within each condition based on mean performance.
+    Also computes pairwise differences and whether they are significant.
+    """
+    from analysis import compute_summary_with_ci
+    
+    ranking_data = []
+    
+    for condition in conditions:
+        cond_results = []
+        for model in models:
+            df = per_replicate_data.get(condition, {}).get(model)
+            if df is not None and not df.empty and metric in df.columns:
+                summary = compute_summary_with_ci(df, metric)
+                cond_results.append({
+                    'Condition': condition,
+                    'Model': model,
+                    'Mean': summary['mean'],
+                    'SD': summary['std'],
+                    'CI_Lower': summary['ci_95_lower'],
+                    'CI_Upper': summary['ci_95_upper'],
+                    'Median': summary['median'],
+                })
+        
+        if cond_results:
+            # Rank by mean (higher = better for Accuracy, lower = better for FPR)
+            reverse = metric != 'FPR'
+            sorted_results = sorted(cond_results, key=lambda x: x['Mean'], reverse=reverse)
+            
+            for rank, res in enumerate(sorted_results, 1):
+                res['Rank'] = rank
+                ranking_data.append(res)
+    
+    return pd.DataFrame(ranking_data)
+
+
+def compute_model_advantage_matrix(
+    per_replicate_data: Dict,
+    conditions: List[str],
+    models: List[str],
+    metric: str = 'Accuracy'
+) -> pd.DataFrame:
+    """
+    Compute pairwise advantage: how much better is model A over model B
+    in each condition. Positive = A better, Negative = B better.
+    """
+    advantages = []
+    
+    for condition in conditions:
+        model_means = {}
+        for model in models:
+            df = per_replicate_data.get(condition, {}).get(model)
+            if df is not None and not df.empty and metric in df.columns:
+                model_means[model] = df[metric].mean()
+        
+        for m1 in models:
+            for m2 in models:
+                if m1 != m2 and m1 in model_means and m2 in model_means:
+                    diff = model_means[m1] - model_means[m2]
+                    # For FPR, reverse the sign (lower is better)
+                    if metric == 'FPR':
+                        diff = -diff
+                    
+                    advantages.append({
+                        'Condition': condition,
+                        'Comparison': f'{m1} vs {m2}',
+                        'Model_Better': m1 if diff > 0 else m2,
+                        'Advantage': abs(diff),
+                        'Raw_Difference': diff,
+                    })
+    
+    return pd.DataFrame(advantages)
 
     
