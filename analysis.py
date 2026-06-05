@@ -1395,7 +1395,7 @@ def compute_metric_correlations(per_replicate_df: pd.DataFrame) -> Dict:
 
 def compute_correlation_with_biological_params(
     summary_df: pd.DataFrame
-    ) -> Dict:
+) -> Dict:
     """
     Compute correlations between model performance and biological parameters (μ, r).
     
@@ -1410,18 +1410,22 @@ def compute_correlation_with_biological_params(
     for model in summary_df['Model'].unique():
         model_data = summary_df[summary_df['Model'] == model]
         
+        # Initialize correlations dictionary for this model
+        correlations = {}
+        
         for metric in ['Accuracy', 'FPR', 'BP_Distance']:
             # Correlation with μ
             if 'μ' in model_data.columns:
-                r_mu, p_mu = stats.spearmanr(model_data['μ'], model_data[metric])
                 mu_values = model_data['μ'].values
-                metric_values = model_data[metric].dropna().values
+                metric_values = model_data[metric].values
                 
-                # Ensure same length
-                valid_idx = ~np.isnan(metric_values) if len(metric_values) == len(mu_values) else slice(None)
+                # Remove NaN values
+                valid_mask = ~np.isnan(mu_values) & ~np.isnan(metric_values)
+                mu_clean = mu_values[valid_mask]
+                metric_clean = metric_values[valid_mask]
                 
-                if len(mu_values) == len(metric_values):
-                    r_mu, p_mu = stats.spearmanr(mu_values, metric_values)
+                if len(mu_clean) > 1:  # Need at least 2 points for correlation
+                    r_mu, p_mu = stats.spearmanr(mu_clean, metric_clean)
                     correlations[f'{metric}_vs_μ'] = {
                         'spearman_r': r_mu,
                         'p_value': p_mu,
@@ -1431,10 +1435,15 @@ def compute_correlation_with_biological_params(
             # Correlation with r (recombination rate)
             if 'r' in model_data.columns:
                 r_values = model_data['r'].values
-                metric_values = model_data[metric].dropna().values
+                metric_values = model_data[metric].values
                 
-                if len(r_values) == len(metric_values):
-                    r_r, p_r = stats.spearmanr(r_values, metric_values)
+                # Remove NaN values
+                valid_mask = ~np.isnan(r_values) & ~np.isnan(metric_values)
+                r_clean = r_values[valid_mask]
+                metric_clean = metric_values[valid_mask]
+                
+                if len(r_clean) > 1:  # Need at least 2 points for correlation
+                    r_r, p_r = stats.spearmanr(r_clean, metric_clean)
                     correlations[f'{metric}_vs_r'] = {
                         'spearman_r': r_r,
                         'p_value': p_r,
@@ -1444,7 +1453,6 @@ def compute_correlation_with_biological_params(
         results[model] = correlations
     
     return results
-
 
 def prepare_correlation_heatmap_data(summary_df: pd.DataFrame) -> pd.DataFrame:
     """
